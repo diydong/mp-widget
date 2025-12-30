@@ -9,14 +9,25 @@ const __dirname = path.dirname(__filename);
 const app = express();
 const PORT = 8888;
 
+/**
+ * 中型 Widget 目标比例（绝大多数 iPhone）
+ * 1170 / 558 ≈ 2.097
+ */
+const TARGET_RATIO = 1170 / 558;
+
+/**
+ * Headless Chromium 稳定工作区
+ */
+const VIEW_W = 800;
+const VIEW_H = 400;
+
 app.get("/render/top7.png", async (req, res) => {
-  // 1️⃣ MP 的业务 token（必须）
+  // ========= 参数校验 =========
   const mpToken = req.query.token;
   if (!mpToken) {
     return res.status(400).send("missing mp token");
   }
 
-  // 2️⃣ Docker 环境变量
   const MP_BASE_URL = process.env.MP_BASE_URL;
   const TMDB_KEY = process.env.TMDB_KEY;
 
@@ -27,6 +38,7 @@ app.get("/render/top7.png", async (req, res) => {
   let browser;
 
   try {
+    // ========= 启动浏览器 =========
     browser = await puppeteer.launch({
       headless: "new",
       args: [
@@ -39,7 +51,7 @@ app.get("/render/top7.png", async (req, res) => {
 
     const page = await browser.newPage();
 
-    // 页面日志（可保留，方便排错）
+    // 调试日志（保留，方便以后排错）
     page.on("console", msg =>
       console.log("PAGE LOG:", msg.type(), msg.text())
     );
@@ -47,7 +59,14 @@ app.get("/render/top7.png", async (req, res) => {
       console.error("PAGE ERROR:", err.message)
     );
 
-    // ⭐ 在页面 JS 执行前注入 ENV
+    // ========= 设置 viewport =========
+    await page.setViewport({
+      width: VIEW_W,
+      height: VIEW_H,
+      deviceScaleFactor: 1
+    });
+
+    // ========= 注入环境变量（HTML 使用） =========
     await page.evaluateOnNewDocument((env) => {
       window.__ENV__ = env;
     }, {
@@ -56,6 +75,7 @@ app.get("/render/top7.png", async (req, res) => {
       TMDB_KEY
     });
 
+    // ========= 打开 HTML =========
     const fileUrl =
       "file://" + path.join(__dirname, "page.html");
 
@@ -63,14 +83,40 @@ app.get("/render/top7.png", async (req, res) => {
       waitUntil: "domcontentloaded"
     });
 
-    // 等前端渲染完成
+    // ========= 等前端渲染完成 =========
     await page.waitForFunction(
       () => window.__RENDER_DONE__ === true,
       { timeout: 30000 }
     );
 
-    const buffer = await page.screenshot({ type: "png" });
+    // ========= 计算裁剪区域（核心） =========
+    let clipW, clipH;
 
+    if (VIEW_W / VIEW_H > TARGET_RATIO) {
+      // viewport 太宽，裁左右
+      clipH = VIEW_H;
+      clipW = Math.round(VIEW_H * TARGET_RATIO);
+    } else {
+      // viewport 太高，裁上下
+      clipW = VIEW_W;
+      clipH = Math.round(VIEW_W / TARGET_RATIO);
+    }
+
+    const clipX = Math.round((VIEW_W - clipW) / 2);
+    const clipY = Math.round((VIEW_H - clipH) / 2);
+
+    // ========= 截图（最终图） =========
+    const buffer = await page.screenshot({
+      type: "png",
+      clip: {
+        x: clipX,
+        y: clipY,
+        width: clipW,
+        height: clipH
+      }
+    });
+
+    // ========= 返回 =========
     res.setHeader("Content-Type", "image/png");
     res.setHeader("Cache-Control", "max-age=300");
     res.send(buffer);
@@ -86,5 +132,5 @@ app.get("/render/top7.png", async (req, res) => {
 });
 
 app.listen(PORT, () => {
-  console.log("render service on :" + PORT);
+  console.log(`render service on :${PORT}`);
 });

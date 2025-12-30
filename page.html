@@ -20,7 +20,7 @@
 </head>
 <body>
 
-<canvas id="c" width="440" height="240"></canvas>
+<canvas id="c" width="800" height="400"></canvas>
 
 <script>
 /* =======================
@@ -265,11 +265,11 @@ async function getTop7() {
 const canvas = document.getElementById("c");
 const ctx = canvas.getContext("2d");
 
-const CARD_W = 100;
-const CARD_H = 150;
-const GAP_X = 10;
-const GAP_Y = 10;
-const RADIUS = 14;
+const CARD_W = 200;
+const CARD_H = 300;
+const GAP_X = 20;
+const GAP_Y = 20;
+const RADIUS = 20;
 const SHADOW_X = 4;
 const SHADOW_Y = 6;
 const ROTATE = 15 * Math.PI / 180;
@@ -309,9 +309,9 @@ async function buildGrid(images) {
   return grid;
 }
 function drawLeftText(list) {
-  const START_X = 20;
-  const START_Y = 40;
-  const LINE_H = 26;
+  const START_X = 40;
+  const START_Y = 80;
+  const LINE_H = 40;
   const MAX_LINES = 6;
 
   const maxAlpha = 1.0;
@@ -319,7 +319,7 @@ function drawLeftText(list) {
   const step =
     (maxAlpha - minAlpha) / (MAX_LINES - 1);
 
-  ctx.font = "14px -apple-system, BlinkMacSystemFont";
+  ctx.font = "20px 'Inter', 'Noto Sans CJK SC', sans-serif";
   ctx.textBaseline = "top";
 
   list.slice(0, MAX_LINES).forEach((item, i) => {
@@ -338,7 +338,7 @@ function drawLeftText(list) {
     ctx.fillStyle = `rgba(255,255,255,${alpha})`;
     ctx.fillText(
       item.name,
-      START_X + 48,
+      START_X + 80,
       y
     );
   });
@@ -361,8 +361,8 @@ async function renderPosters(top7) {
 
   ctx.save();
   ctx.translate(
-    canvas.width - CENTER_COL_X + 40,
-    canvas.height / 2 + 90
+    canvas.width - CENTER_COL_X + 80,
+    canvas.height / 2 + 180
   );
   ctx.rotate(ROTATE);
   ctx.drawImage(
