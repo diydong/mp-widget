@@ -9,10 +9,6 @@ RUN apt-get update && apt-get install -y \
   --no-install-recommends \
   && rm -rf /var/lib/apt/lists/*
 
-COPY fonts/Inter-Regular.ttf /usr/share/fonts/
-RUN fc-cache -f -v
-
-# 告诉 puppeteer 不要下载 Chromium
 ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true
 ENV PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium
 
