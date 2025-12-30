@@ -1,0 +1,393 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <title>MoviePilot Top7 Poster Stack</title>
+  <style>
+    body {
+      margin: 0;
+      background: #000;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      height: 100vh;
+      font-family: -apple-system, BlinkMacSystemFont, monospace;
+    }
+    canvas {
+      background: linear-gradient(#1c1c1e, #000);
+    }
+  </style>
+</head>
+<body>
+
+<canvas id="c" width="440" height="240"></canvas>
+
+<script>
+/* =======================
+   配置
+   ======================= */
+const { MP_BASE_URL, MP_TOKEN, TMDB_KEY } = window.__ENV__;
+
+// 🔒 路径写死在前端模板
+const MP_API =
+  `${MP_BASE_URL}/api/v1/subscribe/list?token=${encodeURIComponent(MP_TOKEN)}`;
+
+
+
+const CANDIDATE_LIMIT = 20;
+const FINAL_LIMIT = 7;
+
+/* =======================
+   工具
+   ======================= */
+function toDate(d) {
+  if (!d) return null;
+  const x = new Date(d);
+  x.setHours(0,0,0,0);
+  return x;
+}
+
+/* ======================================================
+   IndexedDB poster cache
+   ====================================================== */
+const DB_NAME = "poster_cache_db";
+const STORE_NAME = "posters";
+const DB_VERSION = 1;
+
+function openDB() {
+  return new Promise((resolve, reject) => {
+    const req = indexedDB.open(DB_NAME, DB_VERSION);
+
+    req.onupgradeneeded = () => {
+      const db = req.result;
+      if (!db.objectStoreNames.contains(STORE_NAME)) {
+        db.createObjectStore(STORE_NAME);
+      }
+    };
+
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+}
+
+async function getFromCache(key) {
+  const db = await openDB();
+  return new Promise(resolve => {
+    const tx = db.transaction(STORE_NAME, "readonly");
+    const store = tx.objectStore(STORE_NAME);
+    const req = store.get(key);
+    req.onsuccess = () => resolve(req.result || null);
+    req.onerror = () => resolve(null);
+  });
+}
+
+async function saveToCache(key, blob) {
+  const db = await openDB();
+  return new Promise(resolve => {
+    const tx = db.transaction(STORE_NAME, "readwrite");
+    const store = tx.objectStore(STORE_NAME);
+    store.put(blob, key);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => resolve();
+  });
+}
+
+/* ======================================================
+   带缓存的图片加载（浏览器版 ≈ Scriptable）
+   ====================================================== */
+async function loadImage(src) {
+  // 1️⃣ 先尝试 fetch（用于缓存）
+  try {
+    const res = await fetch(src, { mode: "cors" });
+    if (res.ok) {
+      const blob = await res.blob();
+      return await createImageBitmap(blob);
+    }
+  } catch {}
+
+  // 2️⃣ CORS 拦截时，退回 <img>
+  return new Promise(resolve => {
+    const img = new Image();
+    img.crossOrigin = "anonymous";
+    img.onload = () => resolve(img);
+    img.onerror = () => resolve(null);
+    img.src = src;
+  });
+}
+
+
+
+
+function drawRoundedImage(ctx, img, x, y, w, h, r) {
+  ctx.save();
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.lineTo(x + w - r, y);
+  ctx.quadraticCurveTo(x + w, y, x + w, y + r);
+  ctx.lineTo(x + w, y + h - r);
+  ctx.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
+  ctx.lineTo(x + r, y + h);
+  ctx.quadraticCurveTo(x, y + h, x, y + h - r);
+  ctx.lineTo(x, y + r);
+  ctx.quadraticCurveTo(x, y, x + r, y);
+  ctx.closePath();
+  ctx.clip();
+  ctx.drawImage(img, x, y, w, h);
+  ctx.restore();
+}
+function daysFromToday(airDate) {
+  if (!airDate) return null;
+  const today = new Date();
+  today.setHours(0,0,0,0);
+  const d = new Date(airDate);
+  d.setHours(0,0,0,0);
+  return Math.round((d - today) / 86400000);
+}
+
+function timeLabel(airDate) {
+  const diff = daysFromToday(airDate);
+  if (diff === null) return "待定";
+  if (diff === 0) return "今日";
+  if (diff === 1) return "明天";
+  if (diff === 2) return "后天";
+  if (diff > 2) return `${diff}天后`;
+  return "已播";
+}
+/* =======================
+   API
+   ======================= */
+async function fetchSubscribeList() {
+  const res = await fetch(MP_API);
+  const text = await res.text();
+  if (!res.ok) throw new Error(text);
+  return JSON.parse(text);
+}
+
+async function fetchAirDate(tmdbid) {
+  const res = await fetch(
+    `https://api.themoviedb.org/3/tv/${tmdbid}?api_key=${TMDB_KEY}&language=zh-CN`
+  );
+  const data = await res.json();
+  return data?.next_episode_to_air?.air_date || null;
+}
+
+/* =======================
+   核心取数逻辑（最终确认版）
+   ======================= */
+async function getTop7() {
+  const subs = await fetchSubscribeList();
+
+  const tvSubs = subs.filter(
+    s => s.type === "电视剧" && s.tmdbid
+  );
+
+  const following = tvSubs.filter(
+    s =>
+      typeof s.total_episode === "number" &&
+      typeof s.lack_episode === "number" &&
+      (s.total_episode - s.lack_episode) > 0
+  );
+
+  let candidate = [...following];
+
+  if (candidate.length < CANDIDATE_LIMIT) {
+    const used = new Set(candidate.map(s => s.id));
+    const others = tvSubs
+      .filter(s => !used.has(s.id))
+      .sort((a, b) => (b.vote || 0) - (a.vote || 0));
+    for (const s of others) {
+      if (candidate.length >= CANDIDATE_LIMIT) break;
+      candidate.push(s);
+    }
+  } else {
+    candidate = candidate
+      .sort((a, b) => (b.vote || 0) - (a.vote || 0))
+      .slice(0, CANDIDATE_LIMIT);
+  }
+
+  const enriched = [];
+  for (const s of candidate) {
+    const airDate = await fetchAirDate(s.tmdbid);
+    enriched.push({
+      name: s.name,
+      poster: s.poster,
+      vote: s.vote || 0,
+      isFollowing:
+        (s.total_episode - s.lack_episode) > 0,
+      airDate
+    });
+  }
+
+  const followingSorted = enriched
+    .filter(s => s.isFollowing)
+    .sort((a, b) => {
+      if (a.airDate && b.airDate)
+        return toDate(a.airDate) - toDate(b.airDate);
+      if (a.airDate) return -1;
+      if (b.airDate) return 1;
+      return b.vote - a.vote;
+    });
+
+  let top7 = followingSorted.slice(0, FINAL_LIMIT);
+
+  if (top7.length < FINAL_LIMIT) {
+    const used = new Set(top7.map(s => s.name));
+    const rest = enriched
+      .filter(s => !used.has(s.name))
+      .sort((a, b) => {
+        if (a.airDate && b.airDate)
+          return toDate(a.airDate) - toDate(b.airDate);
+        if (a.airDate) return -1;
+        if (b.airDate) return 1;
+        return b.vote - a.vote;
+      });
+
+    for (const s of rest) {
+      if (top7.length >= FINAL_LIMIT) break;
+      top7.push(s);
+    }
+  }
+
+  top7.sort((a, b) => {
+    if (a.airDate && b.airDate)
+      return toDate(a.airDate) - toDate(b.airDate);
+    if (a.airDate) return -1;
+    if (b.airDate) return 1;
+    return 0;
+  });
+
+  return top7;
+}
+
+/* =======================
+   生成图片
+   ======================= */
+const canvas = document.getElementById("c");
+const ctx = canvas.getContext("2d");
+
+const CARD_W = 100;
+const CARD_H = 150;
+const GAP_X = 10;
+const GAP_Y = 10;
+const RADIUS = 14;
+const SHADOW_X = 4;
+const SHADOW_Y = 6;
+const ROTATE = 15 * Math.PI / 180;
+
+const HALF_SHIFT = CARD_H / 2;
+const COL_Y_OFFSET = {
+  0: -HALF_SHIFT,
+  1: 0,
+  2: HALF_SHIFT
+};
+
+async function buildGrid(images) {
+  const grid = document.createElement("canvas");
+  grid.width = 3 * CARD_W + 2 * GAP_X;
+  grid.height = 3 * CARD_H + 2 * GAP_Y + CARD_H;
+  const gctx = grid.getContext("2d");
+
+  let idx = 0;
+  const drawCard = (col, baseY) => {
+    if (idx >= images.length) return;
+    const img = images[idx++];
+    if (!img) return;
+    const x = col * (CARD_W + GAP_X);
+    const y = baseY + COL_Y_OFFSET[col];
+    gctx.fillStyle = "rgba(0,0,0,0.25)";
+    gctx.fillRect(x + SHADOW_X, y + SHADOW_Y, CARD_W, CARD_H);
+    drawRoundedImage(gctx, img, x, y, CARD_W, CARD_H, RADIUS);
+  };
+
+  drawCard(1, 0); drawCard(2, 0);
+  drawCard(0, CARD_H + GAP_Y);
+  drawCard(1, CARD_H + GAP_Y);
+  drawCard(2, CARD_H + GAP_Y);
+  drawCard(0, 2 * (CARD_H + GAP_Y));
+  drawCard(1, 2 * (CARD_H + GAP_Y));
+
+  return grid;
+}
+function drawLeftText(list) {
+  const START_X = 20;
+  const START_Y = 40;
+  const LINE_H = 26;
+  const MAX_LINES = 6;
+
+  const maxAlpha = 1.0;
+  const minAlpha = 0.3;
+  const step =
+    (maxAlpha - minAlpha) / (MAX_LINES - 1);
+
+  ctx.font = "14px -apple-system, BlinkMacSystemFont";
+  ctx.textBaseline = "top";
+
+  list.slice(0, MAX_LINES).forEach((item, i) => {
+    const y = START_Y + i * LINE_H;
+    const alpha = maxAlpha - i * step;
+
+    // 时间标签（稍微更淡一点）
+    ctx.fillStyle = `rgba(255,255,255,${alpha * 0.8})`;
+    ctx.fillText(
+      timeLabel(item.airDate),
+      START_X,
+      y
+    );
+
+    // 剧名（主体）
+    ctx.fillStyle = `rgba(255,255,255,${alpha})`;
+    ctx.fillText(
+      item.name,
+      START_X + 48,
+      y
+    );
+  });
+}
+
+async function renderPosters(top7) {
+  ctx.clearRect(0,0,canvas.width,canvas.height);
+  if (!top7.length) return;
+  // 🔥 左侧文字
+  drawLeftText(top7);
+  const images = (await Promise.all(
+    top7.map(s => loadImage(s.poster))
+  )).filter(Boolean);
+
+  if (!images.length) return;
+
+  const grid = await buildGrid(images);
+  const CENTER_COL_X =
+    (CARD_W + GAP_X) * 1 + CARD_W / 2;
+
+  ctx.save();
+  ctx.translate(
+    canvas.width - CENTER_COL_X + 40,
+    canvas.height / 2 + 90
+  );
+  ctx.rotate(ROTATE);
+  ctx.drawImage(
+    grid,
+    -CENTER_COL_X,
+    -grid.height / 2
+  );
+  ctx.restore();
+}
+
+/* =======================
+   启动
+   ======================= */
+(async () => {
+  try {
+    const top7 = await getTop7();
+    await renderPosters(top7);
+  } catch (e) {
+    console.error("RENDER FAILED", e);
+  } finally {
+    // ⭐ 告诉服务端：canvas 已经画完（不管成功与否）
+    window.__RENDER_DONE__ = true;
+  }
+})();
+</script>
+
+</body>
+</html>
