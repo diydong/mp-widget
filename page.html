@@ -174,17 +174,33 @@ async function fetchSubscribeList() {
   return JSON.parse(text);
 }
 
-async function fetchTvDetails(tmdbid) {
-  const res = await fetch(
-    `https://api.themoviedb.org/3/tv/${tmdbid}?api_key=${TMDB_KEY}&language=zh-CN`
-  );
-  const data = await res.json();
-  return {
-    airDate: data?.next_episode_to_air?.air_date || null,
-    originCountry: data?.origin_country || [],
-    firstAirDate: data?.first_air_date || null
-  };
+async function fetchTvDetailsWithTimeout(tmdbid, timeout = 6000) {
+  const controller = new AbortController();
+  const t = setTimeout(() => controller.abort(), timeout);
+
+  try {
+    const res = await fetch(
+      `https://api.themoviedb.org/3/tv/${tmdbid}?api_key=${TMDB_KEY}&language=zh-CN`,
+      { signal: controller.signal }
+    );
+    const data = await res.json();
+    return {
+      airDate: data?.next_episode_to_air?.air_date || null,
+      originCountry: data?.origin_country || [],
+      firstAirDate: data?.first_air_date || null
+    };
+  } catch (e) {
+    console.warn("TMDB TIMEOUT:", tmdbid);
+    return {
+      airDate: null,
+      originCountry: [],
+      firstAirDate: null
+    };
+  } finally {
+    clearTimeout(t);
+  }
 }
+
 
 /* =======================
    权重分计算
@@ -248,14 +264,15 @@ async function getTop7() {
   );
 
   // 获取所有剧集的详细信息（airDate + originCountry）
-  const enriched = [];
-  for (const s of tvSubs) {
-    const details = await fetchTvDetails(s.tmdbid);
+const enriched = await Promise.all(
+  tvSubs.map(async (s) => {
+    const details = await fetchTvDetailsWithTimeout(s.tmdbid);
+
     const isFollowing = 
       typeof s.total_episode === "number" &&
       typeof s.lack_episode === "number" &&
       (s.total_episode - s.lack_episode) > 0;
-    
+
     const item = {
       name: s.name,
       poster: s.poster,
@@ -265,11 +282,12 @@ async function getTop7() {
       originCountry: details.originCountry,
       firstAirDate: details.firstAirDate
     };
-    
-    // 计算权重分
+
     item.score = calculateScore(item);
-    enriched.push(item);
-  }
+    return item;
+  })
+);
+
 
   // 按权重分排序（降序），取前7
   enriched.sort((a, b) => b.score - a.score);
@@ -327,12 +345,26 @@ async function buildGrid(images) {
     drawRoundedImage(gctx, img, x, y, CARD_W, CARD_H, RADIUS);
   };
 
-  drawCard(1, 0); drawCard(2, 0);
-  drawCard(0, CARD_H + GAP_Y);
-  drawCard(1, CARD_H + GAP_Y);
-  drawCard(2, CARD_H + GAP_Y);
-  drawCard(0, 2 * (CARD_H + GAP_Y));
-  drawCard(1, 2 * (CARD_H + GAP_Y));
+// 第1名 → 2-2（正中）
+drawCard(1, CARD_H + GAP_Y);
+
+// 第2名 → 3-1（左下）
+drawCard(0, 2 * (CARD_H + GAP_Y));
+
+// 第3名 → 2-1（左中）
+drawCard(0, CARD_H + GAP_Y);
+
+// 第4名 → 1-2（上中）
+drawCard(1, 0);
+
+// 第5名 → 1-3（右上）
+drawCard(2, 0);
+
+// 第6名 → 2-3（右中）
+drawCard(2, CARD_H + GAP_Y);
+
+// 第7名 → 3-2（下中）
+drawCard(1, 2 * (CARD_H + GAP_Y));
 
   return grid;
 }
