@@ -174,6 +174,28 @@ async function fetchSubscribeList() {
   return JSON.parse(text);
 }
 
+const TMDB_CONCURRENCY = 5;
+
+async function mapWithConcurrency(list, limit, mapper) {
+  const ret = [];
+  const executing = [];
+
+  for (const item of list) {
+    const p = Promise.resolve().then(() => mapper(item));
+    ret.push(p);
+
+    if (limit <= list.length) {
+      const e = p.then(() => executing.splice(executing.indexOf(e), 1));
+      executing.push(e);
+      if (executing.length >= limit) {
+        await Promise.race(executing);
+      }
+    }
+  }
+
+  return Promise.all(ret);
+}
+
 async function fetchTvDetailsWithTimeout(tmdbid, timeout = 6000) {
   const controller = new AbortController();
   const t = setTimeout(() => controller.abort(), timeout);
@@ -264,11 +286,13 @@ async function getTop7() {
   );
 
   // 获取所有剧集的详细信息（airDate + originCountry）
-const enriched = await Promise.all(
-  tvSubs.map(async (s) => {
+const enriched = await mapWithConcurrency(
+  tvSubs,
+  TMDB_CONCURRENCY,
+  async (s) => {
     const details = await fetchTvDetailsWithTimeout(s.tmdbid);
 
-    const isFollowing = 
+    const isFollowing =
       typeof s.total_episode === "number" &&
       typeof s.lack_episode === "number" &&
       (s.total_episode - s.lack_episode) > 0;
@@ -285,7 +309,7 @@ const enriched = await Promise.all(
 
     item.score = calculateScore(item);
     return item;
-  })
+  }
 );
 
 
