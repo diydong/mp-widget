@@ -10,6 +10,53 @@ const app = express();
 const PORT = 8888;
 
 /**
+ * 1 小时图片缓存（内存）
+ * key: mpToken
+ * value: { buffer: Buffer, expiresAt: number }
+ */
+const CACHE_TTL_MS = 60 * 60 * 1000; // 1 小时
+const imageCache = new Map();
+
+/**
+ * 获取本地时间字符串（用于日志）
+ */
+function getLocalTimeString() {
+  const now = new Date();
+  const year = now.getFullYear();
+  const month = String(now.getMonth() + 1).padStart(2, '0');
+  const day = String(now.getDate()).padStart(2, '0');
+  const hours = String(now.getHours()).padStart(2, '0');
+  const minutes = String(now.getMinutes()).padStart(2, '0');
+  const seconds = String(now.getSeconds()).padStart(2, '0');
+  return `${year}-${month}-${day} ${hours}:${minutes}:${seconds}`;
+}
+
+/**
+ * 从缓存获取图片
+ */
+function getCachedImage(key) {
+  const entry = imageCache.get(key);
+  if (!entry) return null;
+  
+  if (Date.now() >= entry.expiresAt) {
+    imageCache.delete(key);
+    return null;
+  }
+  
+  return entry.buffer;
+}
+
+/**
+ * 存储图片到缓存
+ */
+function setCachedImage(key, buffer) {
+  imageCache.set(key, {
+    buffer,
+    expiresAt: Date.now() + CACHE_TTL_MS
+  });
+}
+
+/**
  * 中型 Widget 目标比例（绝大多数 iPhone）
  * 1170 / 558 ≈ 2.097
  */
@@ -27,6 +74,17 @@ app.get("/render/top7.png", async (req, res) => {
   if (!mpToken) {
     return res.status(400).send("missing mp token");
   }
+
+  // ========= 检查缓存 =========
+  const cached = getCachedImage(mpToken);
+  if (cached) {
+    console.log(`${getLocalTimeString()} hit`);
+    res.setHeader("Content-Type", "image/png");
+    res.setHeader("Cache-Control", "max-age=300");
+    return res.send(cached);
+  }
+  
+  console.log(`${getLocalTimeString()} miss`);
 
   const MP_BASE_URL = process.env.MP_BASE_URL;
   const TMDB_KEY = process.env.TMDB_KEY;
@@ -115,6 +173,9 @@ app.get("/render/top7.png", async (req, res) => {
         height: clipH
       }
     });
+
+    // ========= 写入缓存 =========
+    setCachedImage(mpToken, buffer);
 
     // ========= 返回 =========
     res.setHeader("Content-Type", "image/png");
