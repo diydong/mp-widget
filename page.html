@@ -174,91 +174,108 @@ async function fetchSubscribeList() {
   return JSON.parse(text);
 }
 
-async function fetchAirDate(tmdbid) {
+async function fetchTvDetails(tmdbid) {
   const res = await fetch(
     `https://api.themoviedb.org/3/tv/${tmdbid}?api_key=${TMDB_KEY}&language=zh-CN`
   );
   const data = await res.json();
-  return data?.next_episode_to_air?.air_date || null;
+  return {
+    airDate: data?.next_episode_to_air?.air_date || null,
+    originCountry: data?.origin_country || [],
+    firstAirDate: data?.first_air_date || null
+  };
 }
 
 /* =======================
-   核心取数逻辑（最终确认版）
+   权重分计算
+   ======================= */
+function getCountryScore(originCountry) {
+  if (!Array.isArray(originCountry) || originCountry.length === 0) {
+    return 0;
+  }
+  
+  // 检查是否包含指定国家/地区代码
+  const hasCountry = (codes) => originCountry.some(c => codes.includes(c));
+  
+  // CN,TW,HK = 5分
+  if (hasCountry(['CN', 'TW', 'HK'])) return 8;
+  
+  // US,FR,GB,DE,ES,IT,NL,PT,RU,UK = 10分
+  if (hasCountry(['US', 'FR', 'GB', 'DE', 'ES', 'IT', 'NL', 'PT', 'RU', 'UK'])) return 10;
+  
+  // JP,KP,KR,TH,IN,SG = 8分
+  if (hasCountry(['JP', 'KP', 'KR', 'TH', 'IN', 'SG'])) return 9;
+  
+  return 0;
+}
+
+function calculateScore(item) {
+  let score = 0;
+  
+  // 1. 地区权重分
+  score += getCountryScore(item.originCountry);
+  
+  // 2. 追剧中：10分，否则0分
+  if (item.isFollowing) {
+    score += 10;
+  }
+  
+  // 3. vote 分数
+  score += (item.vote || 0);
+  
+  // 4. 正在播放：10分（first_air_date < 今天 且 存在 airDate）
+  if (item.firstAirDate && item.airDate) {
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const firstAir = toDate(item.firstAirDate);
+    if (firstAir && firstAir < today) {
+      score += 10;
+    }
+  }
+  
+  return score;
+}
+
+/* =======================
+   核心取数逻辑（权重分版本）
    ======================= */
 async function getTop7() {
   const subs = await fetchSubscribeList();
 
+  // 只要电视剧且有 tmdbid
   const tvSubs = subs.filter(
     s => s.type === "电视剧" && s.tmdbid
   );
 
-  const following = tvSubs.filter(
-    s =>
+  // 获取所有剧集的详细信息（airDate + originCountry）
+  const enriched = [];
+  for (const s of tvSubs) {
+    const details = await fetchTvDetails(s.tmdbid);
+    const isFollowing = 
       typeof s.total_episode === "number" &&
       typeof s.lack_episode === "number" &&
-      (s.total_episode - s.lack_episode) > 0
-  );
-
-  let candidate = [...following];
-
-  if (candidate.length < CANDIDATE_LIMIT) {
-    const used = new Set(candidate.map(s => s.id));
-    const others = tvSubs
-      .filter(s => !used.has(s.id))
-      .sort((a, b) => (b.vote || 0) - (a.vote || 0));
-    for (const s of others) {
-      if (candidate.length >= CANDIDATE_LIMIT) break;
-      candidate.push(s);
-    }
-  } else {
-    candidate = candidate
-      .sort((a, b) => (b.vote || 0) - (a.vote || 0))
-      .slice(0, CANDIDATE_LIMIT);
-  }
-
-  const enriched = [];
-  for (const s of candidate) {
-    const airDate = await fetchAirDate(s.tmdbid);
-    enriched.push({
+      (s.total_episode - s.lack_episode) > 0;
+    
+    const item = {
       name: s.name,
       poster: s.poster,
       vote: s.vote || 0,
-      isFollowing:
-        (s.total_episode - s.lack_episode) > 0,
-      airDate
-    });
+      isFollowing,
+      airDate: details.airDate,
+      originCountry: details.originCountry,
+      firstAirDate: details.firstAirDate
+    };
+    
+    // 计算权重分
+    item.score = calculateScore(item);
+    enriched.push(item);
   }
 
-  const followingSorted = enriched
-    .filter(s => s.isFollowing)
-    .sort((a, b) => {
-      if (a.airDate && b.airDate)
-        return toDate(a.airDate) - toDate(b.airDate);
-      if (a.airDate) return -1;
-      if (b.airDate) return 1;
-      return b.vote - a.vote;
-    });
+  // 按权重分排序（降序），取前7
+  enriched.sort((a, b) => b.score - a.score);
+  const top7 = enriched.slice(0, FINAL_LIMIT);
 
-  let top7 = followingSorted.slice(0, FINAL_LIMIT);
-
-  if (top7.length < FINAL_LIMIT) {
-    const used = new Set(top7.map(s => s.name));
-    const rest = enriched
-      .filter(s => !used.has(s.name))
-      .sort((a, b) => {
-        if (a.airDate && b.airDate)
-          return toDate(a.airDate) - toDate(b.airDate);
-        if (a.airDate) return -1;
-        if (b.airDate) return 1;
-        return b.vote - a.vote;
-      });
-
-    for (const s of rest) {
-      if (top7.length >= FINAL_LIMIT) break;
-      top7.push(s);
-    }
-  }
-
+  // 最后按播出时间排序（用于显示）
   top7.sort((a, b) => {
     if (a.airDate && b.airDate)
       return toDate(a.airDate) - toDate(b.airDate);
