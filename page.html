@@ -354,12 +354,14 @@ const enriched = await mapWithConcurrency(
 );
 
 
-  // 按权重分排序（降序），取前7
+  // 按权重分排序（降序）
   enriched.sort((a, b) => b.score - a.score);
-  const top7 = enriched.slice(0, FINAL_LIMIT);
 
-  // 最后按播出时间排序（用于显示）
-  top7.sort((a, b) => {
+  // 图片用：严格权重顺序
+  const top7ByScore = enriched.slice(0, FINAL_LIMIT);
+
+  // 文字用：权重 Top7 的副本，再按播出时间排
+  const top7ForText = [...top7ByScore].sort((a, b) => {
     if (a.airDate && b.airDate)
       return toDate(a.airDate) - toDate(b.airDate);
     if (a.airDate) return -1;
@@ -367,7 +369,11 @@ const enriched = await mapWithConcurrency(
     return 0;
   });
 
-  return top7;
+  return {
+    top7ByScore,
+    top7ForText
+  };
+
 }
 
 /* =======================
@@ -469,13 +475,13 @@ function drawLeftText(list) {
   });
 }
 
-async function renderPosters(top7) {
+async function renderPosters(top7ByScore, top7ForText) {
   ctx.clearRect(0,0,canvas.width,canvas.height);
-  if (!top7.length) return;
+  if (!top7ByScore || !top7ByScore.length) return;
   // 🔥 左侧文字
-  drawLeftText(top7);
+  drawLeftText(top7ForText);
   const images = (await Promise.all(
-    top7.map(s => loadImage(s.poster))
+    top7ByScore.map(s => loadImage(s.poster))
   )).filter(Boolean);
 
   if (!images.length) return;
@@ -503,8 +509,8 @@ async function renderPosters(top7) {
    ======================= */
 (async () => {
   try {
-    const top7 = await getTop7();
-    await renderPosters(top7);
+    const { top7ByScore, top7ForText } = await getTop7();
+    await renderPosters(top7ByScore, top7ForText);
   } catch (e) {
     console.error("RENDER FAILED", e);
   } finally {
